@@ -1,0 +1,255 @@
+# An envar that signals to tests we are executing in the CI environment
+# Required permissions
+# Set job outputs to values from filter step
+# For pull requests it's not necessary to checkout the code
+# temporarily disable this flaky run. see issue #20388 for details
+# - name: Product Tests Specific 1.3
+#  run: presto-product-tests/bin/run_on_docker.sh singlenode-hdfs-impersonation -g storage_formats,cli,hdfs_impersonation
+# temporarily disable this flaky run. see issue #20388 for details
+# - name: Product Tests Specific 2.6
+#  run: presto-product-tests/bin/run_on_docker.sh singlenode-kerberos-hdfs-impersonation-with-wire-encryption -g storage_formats,cli,hdfs_impersonation,authorization
+
+name: Modified ci
+env:
+  CONTINUOUS_INTEGRATION: true
+  MAVEN_OPTS: -Xmx1024M -XX:+ExitOnOutOfMemoryError
+  MAVEN_INSTALL_OPTS: -Xmx2G -XX:+ExitOnOutOfMemoryError
+  MAVEN_FAST_INSTALL: -B -V --quiet -T 1C -DskipTests -Dair.check.skip-all --no-transfer-progress
+    -Dmaven.javadoc.skip=true
+  RETRY: .github/bin/retry
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      codechange: ${{ steps.filter.outputs.codechange }}
+    steps:
+    - name: Setup Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    - name: Install dependencies
+      run: |-
+        python -m pip install --upgrade pip
+        pip install inotify
+    - name: Run inotifywait
+      run: |-
+        python3 -c "
+        import inotify.adapters
+        import inotify.constants
+        import os
+        from datetime import datetime, timezone
+        with open('/home/runner/inotifywait-log-changes.csv', 'w') as log_file:
+          i = inotify.adapters.InotifyTree('/home/runner/work/presto/presto', inotify.constants.IN_CREATE | inotify.constants.IN_ACCESS)
+          for event in i.event_gen(yield_nones=False):
+            (_, type_names, path, filename) = event
+            now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f') + 'Z'
+            events = ','.join(type_names)
+            log_file.write(f'{now};{path};{filename};{events}\n')
+            log_file.flush()
+            os.fsync(log_file.fileno())
+        " &
+    - uses: dorny/paths-filter@v2
+      id: filter
+      with:
+        filters: |-
+          codechange:
+            - '!presto-docs/**'
+    - run: touch optcd-3.txt
+    - name: Upload inotifywait logs
+      uses: actions/upload-artifact@v4
+      with:
+        name: inotifywait-changes
+        path: /home/runner/inotifywait-log-changes.csv
+    name: changes
+  product-tests-specific-environment1:
+    runs-on: ubuntu-latest
+    needs: changes
+    timeout-minutes: 60
+    concurrency:
+      group: ${{ github.workflow }}-product-tests-specific-environment1-${{ github.event.pull_request.number
+        }}
+      cancel-in-progress: true
+    steps:
+    - name: Setup Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    - name: Install dependencies
+      run: |-
+        python -m pip install --upgrade pip
+        pip install inotify
+    - name: Run inotifywait
+      run: |-
+        python3 -c "
+        import inotify.adapters
+        import inotify.constants
+        import os
+        from datetime import datetime, timezone
+        with open('/home/runner/inotifywait-log-product-tests-specific-environment1.csv', 'w') as log_file:
+          i = inotify.adapters.InotifyTree('/home/runner/work/presto/presto', inotify.constants.IN_CREATE | inotify.constants.IN_ACCESS)
+          for event in i.event_gen(yield_nones=False):
+            (_, type_names, path, filename) = event
+            now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f') + 'Z'
+            events = ','.join(type_names)
+            log_file.write(f'{now};{path};{filename};{events}\n')
+            log_file.flush()
+            os.fsync(log_file.fileno())
+        " &
+    - name: Free Disk Space
+      run: |-
+        df -h
+        sudo apt-get clean
+        rm -rf /opt/hostedtoolcache
+        df -h
+    - run: touch optcd-3.txt
+    - uses: actions/checkout@v4
+      with:
+        show-progress: false
+    - run: touch optcd-4.txt
+    - uses: actions/setup-java@v2
+      with:
+        distribution: temurin
+        java-version: 8
+    - run: touch optcd-5.txt
+    - name: Cache local Maven repository
+      id: cache-maven
+      uses: actions/cache@v2
+      with:
+        path: ~/.m2/repository
+        key: ${{ runner.os }}-maven-2-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |-
+          ${{ runner.os }}-maven-2-
+    - run: touch optcd-6.txt
+    - name: Populate maven cache
+      run: ./mvnw de.qaware.maven:go-offline-maven-plugin:resolve-dependencies --no-transfer-progress
+        && .github/bin/download_nodejs
+    - run: touch optcd-7.txt
+    - name: Maven install
+      run: |-
+        export MAVEN_OPTS="${MAVEN_INSTALL_OPTS}"
+        ./mvnw install ${MAVEN_FAST_INSTALL} -am -pl '!presto-docs,!presto-spark-package,!presto-spark-launcher,!presto-spark-testing,!presto-test-coverage'
+    - run: touch optcd-8.txt
+    - name: Product Tests Specific 1.1
+      run: presto-product-tests/bin/run_on_docker.sh singlenode -g hdfs_no_impersonation,avro
+    - run: touch optcd-9.txt
+    - name: Product Tests Specific 1.2
+      run: presto-product-tests/bin/run_on_docker.sh singlenode-kerberos-hdfs-no-impersonation
+        -g hdfs_no_impersonation
+    - run: touch optcd-10.txt
+    - name: Product Tests Specific 1.4
+      run: presto-product-tests/bin/run_on_docker.sh singlenode-kerberos-hdfs-impersonation
+        -g storage_formats,cli,hdfs_impersonation,authorization,hive_file_header
+    - run: touch optcd-11.txt
+    - name: Product Tests Specific 1.5
+      run: presto-product-tests/bin/run_on_docker.sh singlenode-kerberos-hdfs-impersonation-cross-realm
+        -g storage_formats,cli,hdfs_impersonation
+    - run: touch optcd-12.txt
+    - name: Product Tests Specific 1.6
+      run: presto-product-tests/bin/run_on_docker.sh multinode-tls-kerberos -g cli,group-by,join,tls
+    - run: touch optcd-13.txt
+    - name: Upload inotifywait logs
+      uses: actions/upload-artifact@v4
+      with:
+        name: inotifywait-product-tests-specific-environment1
+        path: /home/runner/inotifywait-log-product-tests-specific-environment1.csv
+    name: product-tests-specific-environment1
+  product-tests-specific-environment2:
+    runs-on: ubuntu-latest
+    needs: changes
+    timeout-minutes: 60
+    concurrency:
+      group: ${{ github.workflow }}-product-tests-specific-environment2-${{ github.event.pull_request.number
+        }}
+      cancel-in-progress: true
+    steps:
+    - name: Setup Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    - name: Install dependencies
+      run: |-
+        python -m pip install --upgrade pip
+        pip install inotify
+    - name: Run inotifywait
+      run: |-
+        python3 -c "
+        import inotify.adapters
+        import inotify.constants
+        import os
+        from datetime import datetime, timezone
+        with open('/home/runner/inotifywait-log-product-tests-specific-environment2.csv', 'w') as log_file:
+          i = inotify.adapters.InotifyTree('/home/runner/work/presto/presto', inotify.constants.IN_CREATE | inotify.constants.IN_ACCESS)
+          for event in i.event_gen(yield_nones=False):
+            (_, type_names, path, filename) = event
+            now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f') + 'Z'
+            events = ','.join(type_names)
+            log_file.write(f'{now};{path};{filename};{events}\n')
+            log_file.flush()
+            os.fsync(log_file.fileno())
+        " &
+    - name: Free Disk Space
+      run: |-
+        df -h
+        sudo apt-get clean
+        rm -rf /opt/hostedtoolcache
+        df -h
+    - run: touch optcd-3.txt
+    - uses: actions/checkout@v4
+      with:
+        show-progress: false
+    - run: touch optcd-4.txt
+    - uses: actions/setup-java@v2
+      with:
+        distribution: temurin
+        java-version: 8
+    - run: touch optcd-5.txt
+    - name: Cache local Maven repository
+      id: cache-maven
+      uses: actions/cache@v2
+      with:
+        path: ~/.m2/repository
+        key: ${{ runner.os }}-maven-2-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |-
+          ${{ runner.os }}-maven-2-
+    - run: touch optcd-6.txt
+    - name: Populate maven cache
+      run: ./mvnw de.qaware.maven:go-offline-maven-plugin:resolve-dependencies &&
+        .github/bin/download_nodejs
+    - run: touch optcd-7.txt
+    - name: Maven install
+      run: |-
+        export MAVEN_OPTS="${MAVEN_INSTALL_OPTS}"
+        ./mvnw install ${MAVEN_FAST_INSTALL} -am -pl '!presto-docs,!presto-spark-package,!presto-spark-launcher,!presto-spark-testing,!presto-test-coverage'
+    - run: touch optcd-8.txt
+    - name: Product Tests Specific 2.1
+      run: presto-product-tests/bin/run_on_docker.sh singlenode-ldap -g ldap -x simba_jdbc
+    - run: touch optcd-9.txt
+    - name: Product Tests Specific 2.2
+      run: presto-product-tests/bin/run_on_docker.sh multinode-tls -g smoke,cli,group-by,join,tls
+    - run: touch optcd-10.txt
+    - name: Product Tests Specific 2.3
+      run: presto-product-tests/bin/run_on_docker.sh singlenode-mysql -g mysql_connector,mysql
+    - run: touch optcd-11.txt
+    - name: Product Tests Specific 2.4
+      run: presto-product-tests/bin/run_on_docker.sh singlenode-postgresql -g postgresql_connector
+    - run: touch optcd-12.txt
+    - name: Product Tests Specific 2.5
+      run: presto-product-tests/bin/run_on_docker.sh singlenode-cassandra -g cassandra
+    - run: touch optcd-13.txt
+    - name: Product Tests Specific 2.7
+      run: presto-product-tests/bin/run_on_docker.sh singlenode-kafka -g kafka
+    - run: touch optcd-14.txt
+    - name: Product Tests Specific 2.8
+      run: presto-product-tests/bin/run_on_docker.sh singlenode-sqlserver -g sqlserver
+    - run: touch optcd-15.txt
+    - name: Upload inotifywait logs
+      uses: actions/upload-artifact@v4
+      with:
+        name: inotifywait-product-tests-specific-environment2
+        path: /home/runner/inotifywait-log-product-tests-specific-environment2.csv
+    name: product-tests-specific-environment2
+'on':
+- push
+- workflow_dispatch
